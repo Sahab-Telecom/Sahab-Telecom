@@ -2541,7 +2541,7 @@ function uploadedDateParts(value) {
 }
 
 async function uploadFileToRepo(input) {
-  const file = input.files[0]; if (!file) return; input.value = '';
+  const file = input.files[0]; if (!file) return;
   if (window.location.protocol === 'file:') { alert('افتح الداشبورد من الرابط:\nhttps://sahab-telecom.github.io/Dash/'); return; }
   const progress = document.getElementById('file-upload-progress');
   const label = document.getElementById('file-upload-label');
@@ -2551,11 +2551,22 @@ async function uploadFileToRepo(input) {
   const setP = (p,m) => { if(bar) bar.style.width=p+'%'; if(pctEl) pctEl.textContent=p+'%'; if(label) label.textContent=m; };
   try {
     setP(10,'جاري القراءة...');
-    const buf = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsArrayBuffer(file); });
+    const buf = file.arrayBuffer
+      ? await file.arrayBuffer()
+      : await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsArrayBuffer(file); });
+    input.value = '';
     setP(30,'جاري التحليل...');
     const wb=XLSX.read(buf,{type:'array'}); const ws=wb.Sheets[wb.SheetNames[0]];
-    const rows=XLSX.utils.sheet_to_json(ws);
-    const norm=(row,keys)=>{ for(const k of keys) if(row[k]!==undefined&&row[k]!==null) return row[k]; return null; };
+    const rows=XLSX.utils.sheet_to_json(ws,{defval:null}).map(row=>Object.fromEntries(
+      Object.entries(row).map(([key,value])=>[String(key).replace(/^﻿/,'').trim(),value])
+    ));
+    const norm=(row,keys)=>{
+      const wanted=keys.map(k=>String(k).trim().toLowerCase());
+      for(const [key,value] of Object.entries(row)) {
+        if(wanted.includes(String(key).trim().toLowerCase()) && value!==undefined && value!==null && value!=='') return value;
+      }
+      return null;
+    };
     // Auto-detect format: Red Bull (has REV2+Location) vs Virgin/Friendi (has Dealer Code + IBR)
     const isVirginFormat = rows.length > 0 && !rows[0]['Location'] && rows[0]['Dealer Code'];
     const data=rows.map(r=>{
@@ -2592,7 +2603,7 @@ async function uploadFileToRepo(input) {
     setP(100,'✅ تم!');
     setTimeout(()=>{ if(progress) progress.style.display='none'; },2000);
     loadFilesList();
-  } catch(e) { setP(0,'❌ '+e.message); setTimeout(()=>{ if(progress) progress.style.display='none'; },3000); }
+  } catch(e) { input.value=''; setP(0,'❌ '+e.message); setTimeout(()=>{ if(progress) progress.style.display='none'; },3000); }
 }
 
 async function loadFilesList() {
