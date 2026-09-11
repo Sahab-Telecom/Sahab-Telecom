@@ -834,6 +834,7 @@
         <thead>
           <tr>
             <th>الفرع</th>
+            <th>اسم الفرع بالعربي</th>
             <th>الموظف</th>
             <th>عدد SIMs</th>
             <th>إجمالي REV2</th>
@@ -1549,7 +1550,8 @@ function getLocStats() {
   const map = {};
   for (const r of getActiveData()) {
     if (!r.Location) continue;
-    if (!map[r.Location]) map[r.Location] = { loc: r.Location, staff: r.STAFF_NO, sims: 0, rev2: 0, commProd: 0 };
+    if (!map[r.Location]) map[r.Location] = { loc: r.Location, locAr: r.Location_Ar || r.AR_LOC || '', staff: r.STAFF_NO, sims: 0, rev2: 0, commProd: 0 };
+    if (!map[r.Location].locAr && (r.Location_Ar || r.AR_LOC)) map[r.Location].locAr = r.Location_Ar || r.AR_LOC;
     map[r.Location].sims += r.Count || 1;
     const rev2 = (r.REV2 || 0) * (1 - discountPct / 100);
     map[r.Location].rev2 += rev2;
@@ -1662,6 +1664,7 @@ function renderLocationsTable(locStats) {
   // Update header dynamically
   thead.innerHTML = `
     <th>الفرع</th>
+    <th>اسم الفرع بالعربي</th>
     <th>الموظف</th>
     <th>عدد SIMs</th>
     <th>إجمالي REV2</th>
@@ -1678,6 +1681,7 @@ function renderLocationsTable(locStats) {
       : `<span class="badge badge-red">❌ غير محقق</span>`;
     return `<tr>
       <td><strong>${c.loc}</strong></td>
+      <td>${c.locAr || '—'}</td>
       <td>${c.staff}</td>
       <td>${fmt(c.sims)}</td>
       <td>${fmt(c.rev2)}</td>
@@ -1995,11 +1999,12 @@ async function loadExcel(event) {
       const rows = XLSX.utils.sheet_to_json(ws);
       if (rows.length > 0) {
         // Map columns
-        const colMap = { STAFF_NO: ['STAFF_NO','staff','Staff'], Location: ['Location','location','LOC_CODE'], PK: ['PK','pk','OFFER'], REV2: ['REV2','rev2','Revenue'], Addon_Value: ['Addon Value','Addon_Value','addon_value','ADDON_VALUE'], Count: ['Count','count','qty','GA'] };
+        const colMap = { STAFF_NO: ['STAFF_NO','staff','Staff'], Location: ['Location','location','LOC_CODE'], Location_Ar: ['Location_Ar','Location Ar','AR_LOC','AR LOC'], PK: ['PK','pk','OFFER'], REV2: ['REV2','rev2','Revenue'], Addon_Value: ['Addon Value','Addon_Value','addon_value','ADDON_VALUE'], Count: ['Count','count','qty','GA'] };
         const normalize = (row, keys) => { for (const k of keys) if (row[k] !== undefined) return row[k]; return null; };
         currentData = rows.map(r => ({
           STAFF_NO: normalize(r, colMap.STAFF_NO),
           Location: normalize(r, colMap.Location),
+          Location_Ar: normalize(r, colMap.Location_Ar) || '',
           PK: normalize(r, colMap.PK),
           REV2: parseFloat(normalize(r, colMap.REV2)) || 0,
           Addon_Value: parseFloat(normalize(r, colMap.Addon_Value)) || 0,
@@ -2145,6 +2150,7 @@ async function loadExcel(event) {
         const colMap = {
           STAFF_NO: ['STAFF_NO','staff','Staff'],
           Location: ['Location','location','LOC_CODE'],
+          Location_Ar: ['Location_Ar','Location Ar','AR_LOC','AR LOC'],
           PK: ['PK','pk','OFFER'],
           REV2: ['REV2','rev2','Revenue'],
           Addon_Value: ['Addon Value','Addon_Value','addon_value','ADDON_VALUE'],
@@ -2154,6 +2160,7 @@ async function loadExcel(event) {
         const parsed = rows.map(r => ({
           STAFF_NO: normalize(r, colMap.STAFF_NO),
           Location: normalize(r, colMap.Location),
+          Location_Ar: normalize(r, colMap.Location_Ar) || '',
           PK: normalize(r, colMap.PK),
           REV2: parseFloat(normalize(r, colMap.REV2)) || 0,
           Addon_Value: parseFloat(normalize(r, colMap.Addon_Value)) || 0,
@@ -2554,27 +2561,43 @@ async function uploadFileToRepo(input) {
     const buf = file.arrayBuffer
       ? await file.arrayBuffer()
       : await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsArrayBuffer(file); });
-    input.value = '';
     setP(30,'جاري التحليل...');
-    const wb=XLSX.read(buf,{type:'array'}); const ws=wb.Sheets[wb.SheetNames[0]];
-    const rows=XLSX.utils.sheet_to_json(ws,{defval:null}).map(row=>Object.fromEntries(
-      Object.entries(row).map(([key,value])=>[String(key).replace(/^﻿/,'').trim(),value])
-    ));
+    const wb=XLSX.read(buf,{type:'array'});
+    const cleanKey=key=>String(key??'').replace(/^﻿/,'').trim().toLowerCase();
+    const readRows=ws=>{
+      const grid=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true});
+      const headerIndex=grid.findIndex(row=>{
+        const keys=(row||[]).map(cleanKey);
+        return keys.includes('dealer code') || (keys.includes('staff_no') && (keys.includes('location') || keys.includes('loc_code')));
+      });
+      if(headerIndex<0) return [];
+      const headers=grid[headerIndex].map(key=>String(key??'').replace(/^﻿/,'').trim());
+      return grid.slice(headerIndex+1).map(values=>Object.fromEntries(
+        headers.map((key,index)=>[key,values[index]??null]).filter(([key])=>key)
+      )).filter(row=>Object.values(row).some(value=>value!==null && value!==''));
+    };
+    let rows=[];
+    for(const sheetName of wb.SheetNames) {
+      const candidate=readRows(wb.Sheets[sheetName]);
+      if(candidate.length>rows.length) rows=candidate;
+    }
     const norm=(row,keys)=>{
-      const wanted=keys.map(k=>String(k).trim().toLowerCase());
+      const wanted=keys.map(cleanKey);
       for(const [key,value] of Object.entries(row)) {
-        if(wanted.includes(String(key).trim().toLowerCase()) && value!==undefined && value!==null && value!=='') return value;
+        if(wanted.includes(cleanKey(key)) && value!==undefined && value!==null && value!=='') return value;
       }
       return null;
     };
     // Auto-detect format: Red Bull (has REV2+Location) vs Virgin/Friendi (has Dealer Code + IBR)
-    const isVirginFormat = rows.length > 0 && !rows[0]['Location'] && rows[0]['Dealer Code'];
+    const rowKeys=rows.length ? Object.keys(rows[0]).map(cleanKey) : [];
+    const isVirginFormat = rowKeys.includes('dealer code') && !rowKeys.includes('staff_no');
     const data=rows.map(r=>{
       const reportDate = r['Report Date'] ? new Date(r['Report Date']) : null;
       const created = uploadedDateParts(r['CREATED']);
       return {
         STAFF_NO:    isVirginFormat ? norm(r,['Dealer Code']) : norm(r,['STAFF_NO']),
         Location:    isVirginFormat ? norm(r,['Dealer Code']) : norm(r,['Location','LOC_CODE']),
+        Location_Ar: isVirginFormat ? '' : (norm(r,['Location_Ar','Location Ar','AR_LOC','AR LOC']) || ''),
         PK:          norm(r,['Segment Brand','PK','pk','OFFER']),
         REV2:        isVirginFormat ? (parseFloat(norm(r,['Initial Balance Recharge Amount Without VAT']))||0) : (parseFloat(norm(r,['REV2']))||0),
         Addon_Value: isVirginFormat ? (parseFloat(norm(r,['Initial Balance Recharge Amount Without VAT']))||0) : (parseFloat(norm(r,['Addon Value','Addon_Value','ADDON_VALUE']))||0),
@@ -2586,7 +2609,7 @@ async function uploadFileToRepo(input) {
         StaffName:   norm(r,['Account Manager Name','STAFF_NO']) || ''
       };
     }).filter(r=>r.STAFF_NO&&r.Location&&r.Count>0);
-    if (!data.length) { setP(0,'❌ لا بيانات'); return; }
+    if (!data.length) { input.value=''; setP(0,'❌ لم تُقرأ بيانات صالحة ('+rows.length+' صف)'); console.warn('Excel headers:',rows[0]?Object.keys(rows[0]):[]); return; }
     const days=[...new Set(data.map(d=>d.Day).filter(d=>d>0))].sort((a,b)=>a-b);
     const locs=[...new Set(data.filter(d=>d.Location).map(d=>d.Location))];
     const months=[...new Set(data.map(d=>d.Month).filter(Boolean))];
@@ -2600,6 +2623,7 @@ async function uploadFileToRepo(input) {
     if (!res.ok) throw new Error('فشل: '+res.status);
     setP(80,'حفظ المعلومات...');
     await fetch(FILES_DB_URL+'/'+fileId+'/info.json',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(fileInfo)});
+    input.value='';
     setP(100,'✅ تم!');
     setTimeout(()=>{ if(progress) progress.style.display='none'; },2000);
     loadFilesList();
