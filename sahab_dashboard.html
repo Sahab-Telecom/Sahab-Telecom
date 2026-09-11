@@ -2547,6 +2547,29 @@ function uploadedDateParts(value) {
   return { day, month:months[month]||'', year };
 }
 
+// بعض تقارير Red Bull الجديدة تُبقي أعمدة الفرع موجودة لكنها فارغة.
+// في هذه الحالة نستخدم الفرع الأكثر تكراراً للموظف من الملف النشط حالياً.
+function buildStaffLocationLookup() {
+  const votes = {};
+  const source = Array.isArray(RAW_DATA) ? RAW_DATA : [];
+  for (const row of source) {
+    const staff = String(row.STAFF_NO || row.SELLER || '').trim();
+    const location = String(row.Location || row.LOC_CODE || '').trim();
+    const locationAr = String(row.Location_Ar || row.AR_LOC || '').trim();
+    if (!staff || !location) continue;
+    if (!votes[staff]) votes[staff] = {};
+    const key = location + '\u0000' + locationAr;
+    votes[staff][key] = (votes[staff][key] || 0) + 1;
+  }
+  const lookup = {};
+  for (const [staff, choices] of Object.entries(votes)) {
+    const best = Object.entries(choices).sort((a,b) => b[1] - a[1])[0];
+    if (!best) continue;
+    const [location, locationAr=''] = best[0].split('\u0000');
+    lookup[staff] = { location, locationAr };
+  }
+  return lookup;
+}
 async function uploadFileToRepo(input) {
   const file = input.files[0]; if (!file) return;
   if (window.location.protocol === 'file:') { alert('افتح الداشبورد من الرابط:\nhttps://sahab-telecom.github.io/Dash/'); return; }
@@ -2568,7 +2591,9 @@ async function uploadFileToRepo(input) {
       const grid=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true});
       const headerIndex=grid.findIndex(row=>{
         const keys=(row||[]).map(cleanKey);
-        return keys.includes('dealer code') || (keys.includes('staff_no') && (keys.includes('location') || keys.includes('loc_code')));
+        const hasStaff = keys.includes('staff_no') || keys.includes('seller') || keys.includes('active by');
+        const hasLocation = keys.includes('location') || keys.includes('loc_code') || keys.includes('loc code') || keys.includes('location code');
+        return keys.includes('dealer code') || (hasStaff && hasLocation);
       });
       if(headerIndex<0) return [];
       const headers=grid[headerIndex].map(key=>String(key??'').replace(/^﻿/,'').trim());
@@ -2591,13 +2616,22 @@ async function uploadFileToRepo(input) {
     // Auto-detect format: Red Bull (has REV2+Location) vs Virgin/Friendi (has Dealer Code + IBR)
     const rowKeys=rows.length ? Object.keys(rows[0]).map(cleanKey) : [];
     const isVirginFormat = rowKeys.includes('dealer code') && !rowKeys.includes('staff_no');
+    const staffLocationLookup = buildStaffLocationLookup();
     const data=rows.map(r=>{
       const reportDate = r['Report Date'] ? new Date(r['Report Date']) : null;
-      const created = uploadedDateParts(r['CREATED']);
+      const created = uploadedDateParts(norm(r,['CREATED','Created','CREATE_DATE']));
+      const staffNo = isVirginFormat ? norm(r,['Dealer Code']) : norm(r,['STAFF_NO','SELLER','Seller','Active by']);
+      const knownLocation = staffNo ? staffLocationLookup[String(staffNo).trim()] : null;
+      const location = isVirginFormat
+        ? norm(r,['Dealer Code'])
+        : (norm(r,['Location','LOC_CODE','LOC CODE','Location Code','LOCATION_CODE']) || knownLocation?.location || '');
+      const locationAr = isVirginFormat
+        ? ''
+        : (norm(r,['Location_Ar','Location Ar','AR_LOC','AR LOC','Arabic Location']) || knownLocation?.locationAr || '');
       return {
-        STAFF_NO:    isVirginFormat ? norm(r,['Dealer Code']) : norm(r,['STAFF_NO']),
-        Location:    isVirginFormat ? norm(r,['Dealer Code']) : norm(r,['Location','LOC_CODE']),
-        Location_Ar: isVirginFormat ? '' : (norm(r,['Location_Ar','Location Ar','AR_LOC','AR LOC']) || ''),
+        STAFF_NO:    staffNo,
+        Location:    location,
+        Location_Ar: locationAr,
         PK:          norm(r,['Segment Brand','PK','pk','OFFER']),
         REV2:        isVirginFormat ? (parseFloat(norm(r,['Initial Balance Recharge Amount Without VAT']))||0) : (parseFloat(norm(r,['REV2']))||0),
         Addon_Value: isVirginFormat ? (parseFloat(norm(r,['Initial Balance Recharge Amount Without VAT']))||0) : (parseFloat(norm(r,['Addon Value','Addon_Value','ADDON_VALUE']))||0),
